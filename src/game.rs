@@ -262,18 +262,17 @@ impl GameState {
         result.clear();
         for candidate_position in 0..9 {
             if self.board[candidate_position].is_none() {
-                let max_iter = if first_card_only {
-                    1
-                } else {
-                    self.hands[player].len()
-                };
-                for candidate_card in 0..max_iter {
+                'card_iter: for candidate_card in 0..self.hands[player].len() {
                     if self.hands[player][candidate_card].is_some() {
                         result.push(GameMove {
                             player,
                             card_idx: candidate_card,
                             placement: candidate_position,
-                        })
+                        });
+
+                        if first_card_only {
+                            break 'card_iter;
+                        }
                     }
                 }
             }
