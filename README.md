@@ -4,7 +4,7 @@ This is a Triple Triad solver for FFXIV.
 
 ## How to Use
 
-* Either build the solver yourself (see below), or download the latest release (coming soon maybe).
+* Either build the solver yourself (see below), or download the latest release.
 * Because the actual Triple Triad cards themselves (and the NPC data) is owned by Square Enix, it isn't redistributed with this program. Therefore, it will ask you to enter the location of a Github repository that does host the data, and then download and cache it.
 
 ## Limitations:
