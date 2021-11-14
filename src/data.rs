@@ -1,16 +1,20 @@
 use csv::{Reader, ReaderBuilder};
+use directories::ProjectDirs;
+use inquire::Text;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::game::{Card, Rules, Suit};
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::{BufRead, BufReader},
-    path::Path,
+    io::{BufRead, BufReader, Write},
+    path::{Path, PathBuf},
+    time::Instant,
 };
 
 #[derive(thiserror::Error, Debug)]
-pub enum LoadError {
-    #[error("could not read from disk")]
+pub enum LoadDataError {
+    #[error("could not read/write from disk")]
     IoError(#[from] std::io::Error),
 
     #[error("invalid CSV")]
@@ -27,13 +31,103 @@ pub enum LoadError {
 
     #[error("missing name data for card(s)")]
     MissingNames,
+
+    #[error("network request failed")]
+    NetworkError(#[from] reqwest::Error),
+
+    #[error("download of {} failed with HTTP {}", 0, 1)]
+    DownloadFailed(String, u16),
 }
+
+fn append_path<P: AsRef<Path>>(p: &Path, fname: P) -> PathBuf {
+    let mut result = p.to_path_buf();
+    result.push(fname);
+    result
+}
+
+const REQUIRED_PATHS: [&str; 5] = [
+    "TripleTriadCard.csv",
+    "TripleTriadCardResident.csv",
+    "TripleTriad.csv",
+    "ENpcBase.csv",
+    "ENpcResident.csv",
+];
 
 pub struct Data {
     pub cards_by_name: HashMap<String, Card>,
-    pub cards_by_id: HashMap<i32, Card>,
+    pub card_names: HashMap<i32, String>,
     pub npcs_by_name: HashMap<String, Npc>,
-    pub ordered_card_names: Vec<String>,
+}
+impl Data {
+    pub fn new(project_dirs: &ProjectDirs) -> Result<Self, LoadDataError> {
+        let cache_path = project_dirs.cache_dir();
+        let required_paths = REQUIRED_PATHS.map(|fname| append_path(cache_path, fname));
+        if required_paths.iter().all(|p| p.exists()) {
+            println!("Loading all card and NPC data...");
+            let start = Instant::now();
+            let result = load_all_data(cache_path)?;
+            println!("Loaded data in {:?}", Instant::now() - start);
+            Ok(result)
+        } else {
+            std::fs::create_dir_all(cache_path)?;
+
+            // Download the data from a user-provided URL
+            println!("This is the first time the solver has run on this computer, and it needs to download Triple Triad card and NPC data.");
+            let repo = Text::new("Please enter the github repository to download from:")
+                .prompt()
+                .unwrap();
+
+            let repo_parts = repo.split("/").collect::<Vec<_>>();
+            let base_url = format!(
+                "https://raw.githubusercontent.com/{}/{}/master/csv/",
+                repo_parts[0], repo_parts[1]
+            );
+
+            println!("Downloading...");
+            let client = reqwest::blocking::Client::new();
+            let start = Instant::now();
+            let results: Vec<usize> = REQUIRED_PATHS
+                .map(|fname| (fname, client.clone(), append_path(cache_path, fname)))
+                .par_iter()
+                .map(|(fname, client, destination)| {
+                    let mut url = base_url.clone();
+                    url.push_str(fname);
+
+                    let response = client.get(&url).send()?;
+                    if !response.status().is_success() {
+                        Err(LoadDataError::DownloadFailed(url, response.status().into()))
+                    } else {
+                        let text = response.text()?;
+                        let mut file = File::create(destination)?;
+                        file.write_all(text.as_bytes())?;
+
+                        Ok(text.len())
+                    }
+                })
+                .collect::<Result<_, LoadDataError>>()?;
+
+            let duration = Instant::now() - start;
+            let total_bytes: usize = results.iter().sum();
+            let kib_per_ms = (total_bytes as f64 / 1024f64) / (duration.as_millis() as f64);
+            println!(
+                "Downloaded card and NPC data in {:?} ({:.2} KiB/sec)",
+                duration,
+                kib_per_ms * 1000f64
+            );
+
+            println!("Loading all card and NPC data...");
+            let start = Instant::now();
+            let result = load_all_data(cache_path)?;
+            println!("Loaded data in {:?}", Instant::now() - start);
+            Ok(result)
+        }
+    }
+
+    pub fn get_card(&self, id: i32) -> Option<&Card> {
+        self.card_names
+            .get(&id)
+            .and_then(|name| self.cards_by_name.get(name))
+    }
 }
 
 #[derive(Debug)]
@@ -43,8 +137,8 @@ pub struct Npc {
     pub rules: Rules,
 }
 
-pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadError> {
-    let (name_to_id, mut id_to_name) = {
+pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadDataError> {
+    let (name_to_id, card_names) = {
         let mut card_names_path = base_path.as_ref().to_path_buf();
         card_names_path.push("TripleTriadCard.csv");
         load_card_names(card_names_path)?
@@ -63,12 +157,12 @@ pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadError> {
             cards_by_id
                 .get(&id)
                 .cloned()
-                .ok_or(LoadError::MissingCardData(id))?,
+                .ok_or(LoadDataError::MissingCardData(id))?,
         );
     }
 
     if cards_by_name.len() != cards_by_id.len() {
-        return Err(LoadError::MissingNames);
+        return Err(LoadDataError::MissingNames);
     }
 
     let npcs_by_id = {
@@ -102,25 +196,17 @@ pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadError> {
         }
     }
 
-    let mut card_ids = cards_by_id.keys().collect::<Vec<_>>();
-    card_ids.sort();
-    let ordered_card_names = card_ids
-        .into_iter()
-        .map(|id| id_to_name.remove(&id).unwrap())
-        .collect();
-
     Ok(Data {
         cards_by_name,
-        cards_by_id,
+        card_names,
         npcs_by_name,
-        ordered_card_names,
     })
 }
 
 fn load_npc_names<P: AsRef<Path>>(
     path: P,
     ids: HashSet<i32>,
-) -> Result<HashMap<i32, String>, LoadError> {
+) -> Result<HashMap<i32, String>, LoadDataError> {
     let mut csv = open_csv(path)?;
 
     let mut result = HashMap::new();
@@ -143,7 +229,7 @@ fn load_npc_names<P: AsRef<Path>>(
 fn load_npc_id_map<P: AsRef<Path>>(
     path: P,
     npc_ids: &HashMap<i32, Npc>,
-) -> Result<HashMap<i32, i32>, LoadError> {
+) -> Result<HashMap<i32, i32>, LoadDataError> {
     let mut csv = open_csv(path)?;
 
     let mut result = HashMap::new();
@@ -167,7 +253,7 @@ fn load_npc_id_map<P: AsRef<Path>>(
     Ok(result)
 }
 
-fn load_tt_npc_data<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Npc>, LoadError> {
+fn load_tt_npc_data<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Npc>, LoadDataError> {
     let mut csv = open_csv(path)?;
 
     let mut result = HashMap::new();
@@ -207,7 +293,7 @@ fn load_tt_npc_data<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Npc>, LoadEr
 
 fn load_card_names<P: AsRef<Path>>(
     path: P,
-) -> Result<(HashMap<String, i32>, HashMap<i32, String>), LoadError> {
+) -> Result<(HashMap<String, i32>, HashMap<i32, String>), LoadDataError> {
     let mut csv = open_csv(path)?;
 
     let mut name_to_id = HashMap::new();
@@ -225,7 +311,7 @@ fn load_card_names<P: AsRef<Path>>(
     Ok((name_to_id, id_to_name))
 }
 
-fn load_cards_resident<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Card>, LoadError> {
+fn load_cards_resident<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Card>, LoadDataError> {
     let mut csv = open_csv(path)?;
 
     let mut result = HashMap::new();
@@ -244,7 +330,7 @@ fn load_cards_resident<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Card>, Lo
             "2" => Some(Suit::Scion),
             "3" => Some(Suit::Beastman),
             "4" => Some(Suit::Garlean),
-            _ => return Err(LoadError::UnknownSuit(record[7].to_string())),
+            _ => return Err(LoadDataError::UnknownSuit(record[7].to_string())),
         };
 
         result.insert(id, Card::new(n, s, w, e, suit));
@@ -253,7 +339,7 @@ fn load_cards_resident<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Card>, Lo
     Ok(result)
 }
 
-fn open_csv<P: AsRef<Path>>(path: P) -> Result<Reader<BufReader<File>>, LoadError> {
+fn open_csv<P: AsRef<Path>>(path: P) -> Result<Reader<BufReader<File>>, LoadDataError> {
     let mut file = BufReader::new(File::open(path)?);
 
     // throw away the first line

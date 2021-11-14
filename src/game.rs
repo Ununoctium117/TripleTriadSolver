@@ -1,9 +1,8 @@
 use colorful::{core::color_string::CString, Color, Colorful};
-use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
     collections::VecDeque,
-    fmt::Display,
+    fmt::{Display, Formatter},
     ops::{Index, IndexMut},
 };
 
@@ -75,7 +74,7 @@ impl Rules {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Player {
     Red,
@@ -87,6 +86,11 @@ impl Player {
             Player::Blue => Color::LightBlue,
             Player::Red => Color::LightRed,
         }
+    }
+}
+impl Display for Player {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 impl GamePlayer for Player {
@@ -138,7 +142,7 @@ pub enum Suit {
     Garlean,
 }
 impl Display for Suit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
@@ -217,13 +221,26 @@ impl Card {
                 .min(MAX_VALUE)
                 .max(0)
     }
+
+    pub fn get_modified_value_display(
+        &self,
+        modifiers: &Modifiers,
+        direction: Direction,
+    ) -> String {
+        let val = self.get_modified_value(modifiers, direction);
+        if val >= MAX_VALUE {
+            "A".to_string()
+        } else {
+            val.to_string()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct GameMove {
-    player: Player,
-    card_idx: usize,
-    placement: usize,
+    pub player: Player,
+    pub card_idx: usize,
+    pub placement: usize,
 }
 
 #[derive(Clone, Default)]
@@ -232,7 +249,7 @@ struct GameState {
     // 3, 4, 5
     // 6, 7, 8
     board: [Option<(Card, Player)>; 9],
-    hands: [[Option<Card>; 10]; 2],
+    hands: [[Option<(i32, Card)>; 10]; 2], // (id, card)
     modifiers: Modifiers,
     actual_hand_sizes: [usize; 2],
 }
@@ -319,10 +336,6 @@ impl Game {
         }
     }
 
-    pub fn is_over(&self) -> bool {
-        self.current_state().is_game_over()
-    }
-
     fn adjacency(from: usize, to: usize) -> Option<Direction> {
         Some(match (from, to) {
             (0, 1) | (1, 2) | (3, 4) | (4, 5) | (6, 7) | (7, 8) => Direction::East,
@@ -338,14 +351,19 @@ impl Game {
     }
 
     // Note: directly modifies the current game state, doesn't affect history
-    pub fn set_cards_in_hand(&mut self, player: Player, cards: &[Card], actual_size: usize) {
+    pub fn set_cards_in_hand(
+        &mut self,
+        player: Player,
+        cards: &[(i32, Card); 5],
+        actual_size: usize,
+    ) {
         let state = self.state_and_history.back_mut().unwrap();
         let hand = &mut state.hands[player];
 
-        for i in 0..cards.len() {
+        for i in 0..5 {
             hand[i] = Some(cards[i].clone());
         }
-        for i in cards.len()..hand.len() {
+        for i in 5..hand.len() {
             hand[i] = None;
         }
 
@@ -358,7 +376,10 @@ impl Game {
         let hand = &mut state.hands[player];
         for i in 0..5 {
             if npc.fixed_cards[i] != 0 {
-                hand[i] = Some(data.cards_by_id.get(&npc.fixed_cards[i]).cloned().unwrap());
+                hand[i] = Some((
+                    npc.fixed_cards[i],
+                    data.get_card(npc.fixed_cards[i]).unwrap().clone(),
+                ));
             } else {
                 hand[i] = None;
             }
@@ -366,12 +387,10 @@ impl Game {
 
         for i in 0..5 {
             if npc.variable_cards[i] != 0 {
-                hand[i + 5] = Some(
-                    data.cards_by_id
-                        .get(&npc.variable_cards[i])
-                        .cloned()
-                        .unwrap(),
-                );
+                hand[i + 5] = Some((
+                    npc.variable_cards[i],
+                    data.get_card(npc.variable_cards[i]).unwrap().clone(),
+                ));
             } else {
                 hand[i + 5] = None;
             }
@@ -381,17 +400,23 @@ impl Game {
         self.rules = npc.rules.clone();
     }
 
+    pub fn player_hand_card_name<'a, 'b>(
+        &'a self,
+        player: Player,
+        idx: usize,
+        data: &'b Data,
+    ) -> &'b String {
+        let id = self.current_state().hands[player][idx].as_ref().unwrap().0;
+        data.card_names.get(&id).unwrap()
+    }
+
     fn get_display(&self, pos: usize, dir: Direction) -> CString {
         let state = self.current_state();
         state.board[pos]
             .as_ref()
             .map(|(card, player)| {
-                let val = card.get_modified_value(&state.modifiers, dir);
-                if val == MAX_VALUE {
-                    "A".color(player.display_color())
-                } else {
-                    val.to_string().color(player.display_color())
-                }
+                card.get_modified_value_display(&state.modifiers, dir)
+                    .color(player.display_color())
             })
             .unwrap_or_else(|| " ".to_string().color(Color::Black))
     }
@@ -408,7 +433,7 @@ impl Game {
             .map(|(card, player)| {
                 card.suit
                     .map(|suit| suit.to_string().color(player.display_color()))
-                    .unwrap_or_else(|| "⋅".color(player.display_color()))
+                    .unwrap_or_else(|| " ".color(player.display_color()))
             })
             .unwrap_or_else(|| " ".color(Color::Black))
     }
@@ -431,7 +456,7 @@ impl SearchableGame for Game {
 
     fn apply_move(&mut self, mv: &Self::Move) {
         let mut new_state = self.current_state().clone();
-        let played_card = new_state.hands[mv.player][mv.card_idx].take().unwrap();
+        let (_, played_card) = new_state.hands[mv.player][mv.card_idx].take().unwrap();
         new_state.actual_hand_sizes[mv.player] -= 1;
 
         for possibly_adjacent in 0..9 {
@@ -512,7 +537,7 @@ impl Display for Game {
     //   │ 0 0 │ 0 0 │ 0 0 │
     //   │  0  │  0  │  0  │
     //   └─────┴─────┴─────┘
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         use Direction::*;
 
         writeln!(f, "  ┌─────┬─────┬─────┐")?;
@@ -557,14 +582,14 @@ impl Display for Game {
         writeln!(
             f,
             "{} │ {} {} │ {} {} │ {} {} │ {}",
-            self.get_hand_display(Player::Red),
+            self.get_hand_display(Player::Blue),
             self.get_display(3, West),
             self.get_display(3, East),
             self.get_display(4, West),
             self.get_display(4, East),
             self.get_display(5, West),
             self.get_display(5, East),
-            self.get_hand_display(Player::Blue),
+            self.get_hand_display(Player::Red),
         )?;
         writeln!(
             f,
@@ -578,11 +603,11 @@ impl Display for Game {
             f,
             "  │  {}{} │  {}{} │  {}{} │",
             self.get_display(6, North),
-            self.get_suit_display(7),
+            self.get_suit_display(6),
             self.get_display(7, North),
-            self.get_suit_display(8),
+            self.get_suit_display(7),
             self.get_display(8, North),
-            self.get_suit_display(9),
+            self.get_suit_display(8),
         )?;
         writeln!(
             f,
