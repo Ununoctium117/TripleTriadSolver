@@ -1,4 +1,5 @@
 use colorful::{core::color_string::CString, Color, Colorful};
+use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
     collections::VecDeque,
@@ -111,7 +112,7 @@ impl<T> IndexMut<Player> for [T; 2] {
 
 #[derive(Copy, Clone)]
 #[repr(usize)]
-enum Direction {
+pub enum Direction {
     North,
     South,
     West,
@@ -136,8 +137,22 @@ pub enum Suit {
     Scion,
     Garlean,
 }
+impl Display for Suit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match *self {
+                Suit::Primal => "P",
+                Suit::Beastman => "B",
+                Suit::Scion => "S",
+                Suit::Garlean => "G",
+            }
+        )
+    }
+}
 #[derive(Clone, Default)]
-struct Modifiers([i32; 4]);
+pub struct Modifiers([i32; 4]);
 impl Index<Suit> for Modifiers {
     type Output = i32;
 
@@ -154,7 +169,7 @@ impl IndexMut<Suit> for Modifiers {
 #[derive(Clone, Debug)]
 pub struct Card {
     values: [i32; 4],
-    suit: Option<Suit>, // TODO: have "None" suit instead of Option for better packing
+    pub suit: Option<Suit>, // TODO: have "None" suit instead of Option for better packing
 }
 impl Card {
     pub fn new(n: i32, s: i32, w: i32, e: i32, suit: Option<Suit>) -> Self {
@@ -196,7 +211,7 @@ impl Card {
         }
     }
 
-    fn get_modified_value(&self, modifiers: &Modifiers, direction: Direction) -> i32 {
+    pub fn get_modified_value(&self, modifiers: &Modifiers, direction: Direction) -> i32 {
         self.values[direction as usize]
             + (self.suit.map(|s| modifiers[s]).unwrap_or(0))
                 .min(MAX_VALUE)
@@ -386,6 +401,17 @@ impl Game {
             .to_string()
             .color(player.display_color())
     }
+
+    fn get_suit_display(&self, pos: usize) -> CString {
+        self.current_state().board[pos]
+            .as_ref()
+            .map(|(card, player)| {
+                card.suit
+                    .map(|suit| suit.to_string().color(player.display_color()))
+                    .unwrap_or_else(|| "⋅".color(player.display_color()))
+            })
+            .unwrap_or_else(|| " ".color(Color::Black))
+    }
 }
 impl SearchableGame for Game {
     type Move = GameMove;
@@ -474,7 +500,7 @@ impl SearchableGame for Game {
 }
 impl Display for Game {
     //   ┌─────┬─────┬─────┐
-    //   │  0  │  0  │  0  │
+    //   │  0S │  0S │  0S │
     //   │ 0 0 │ 0 0 │ 0 0 │
     //   │  0  │  0  │  0  │
     //   ├─────┼─────┼─────┤
@@ -492,10 +518,13 @@ impl Display for Game {
         writeln!(f, "  ┌─────┬─────┬─────┐")?;
         writeln!(
             f,
-            "  │  {}  │  {}  │  {}  │",
+            "  │  {}{} │  {}{} │  {}{} │",
             self.get_display(0, North),
+            self.get_suit_display(0),
             self.get_display(1, North),
-            self.get_display(2, North)
+            self.get_suit_display(1),
+            self.get_display(2, North),
+            self.get_suit_display(2),
         )?;
         writeln!(
             f,
@@ -517,10 +546,13 @@ impl Display for Game {
         writeln!(f, "  ├─────┼─────┼─────┤")?;
         writeln!(
             f,
-            "  │  {}  │  {}  │  {}  │",
+            "  │  {}{} │  {}{} │  {}{} │",
             self.get_display(3, North),
+            self.get_suit_display(3),
             self.get_display(4, North),
-            self.get_display(5, North)
+            self.get_suit_display(4),
+            self.get_display(5, North),
+            self.get_suit_display(5),
         )?;
         writeln!(
             f,
@@ -544,10 +576,13 @@ impl Display for Game {
         writeln!(f, "  ├─────┼─────┼─────┤")?;
         writeln!(
             f,
-            "  │  {}  │  {}  │  {}  │",
+            "  │  {}{} │  {}{} │  {}{} │",
             self.get_display(6, North),
+            self.get_suit_display(7),
             self.get_display(7, North),
-            self.get_display(8, North)
+            self.get_suit_display(8),
+            self.get_display(8, North),
+            self.get_suit_display(9),
         )?;
         writeln!(
             f,

@@ -33,6 +33,7 @@ pub struct Data {
     pub cards_by_name: HashMap<String, Card>,
     pub cards_by_id: HashMap<i32, Card>,
     pub npcs_by_name: HashMap<String, Npc>,
+    pub ordered_card_names: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -43,7 +44,7 @@ pub struct Npc {
 }
 
 pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadError> {
-    let card_names = {
+    let (name_to_id, mut id_to_name) = {
         let mut card_names_path = base_path.as_ref().to_path_buf();
         card_names_path.push("TripleTriadCard.csv");
         load_card_names(card_names_path)?
@@ -56,7 +57,7 @@ pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadError> {
     };
 
     let mut cards_by_name = HashMap::new();
-    for (name, id) in card_names {
+    for (name, id) in name_to_id {
         cards_by_name.insert(
             name,
             cards_by_id
@@ -97,14 +98,22 @@ pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadError> {
                 println!("Missing name for NPC {} (mapped: {})", id, mapped_id);
             }
         } else {
-            println!("Missing ID mapping for NPC {}", id);
+            // println!("Missing ID mapping for NPC {}", id);
         }
     }
+
+    let mut card_ids = cards_by_id.keys().collect::<Vec<_>>();
+    card_ids.sort();
+    let ordered_card_names = card_ids
+        .into_iter()
+        .map(|id| id_to_name.remove(&id).unwrap())
+        .collect();
 
     Ok(Data {
         cards_by_name,
         cards_by_id,
         npcs_by_name,
+        ordered_card_names,
     })
 }
 
@@ -196,17 +205,24 @@ fn load_tt_npc_data<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Npc>, LoadEr
     Ok(result)
 }
 
-fn load_card_names<P: AsRef<Path>>(path: P) -> Result<HashMap<String, i32>, LoadError> {
+fn load_card_names<P: AsRef<Path>>(
+    path: P,
+) -> Result<(HashMap<String, i32>, HashMap<i32, String>), LoadError> {
     let mut csv = open_csv(path)?;
 
-    let mut result = HashMap::new();
+    let mut name_to_id = HashMap::new();
+    let mut id_to_name = HashMap::new();
     // Skip the first row since it's just type information, and the second row is the dummy card
     for record in csv.records().skip(2) {
         let record = record?;
-        result.insert(record[1].to_string(), record[0].parse()?);
+        let id = record[0].parse()?;
+        let name = record[1].to_string();
+
+        name_to_id.insert(name.clone(), id);
+        id_to_name.insert(id, name);
     }
 
-    Ok(result)
+    Ok((name_to_id, id_to_name))
 }
 
 fn load_cards_resident<P: AsRef<Path>>(path: P) -> Result<HashMap<i32, Card>, LoadError> {

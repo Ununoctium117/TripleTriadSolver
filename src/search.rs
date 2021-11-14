@@ -35,7 +35,7 @@ pub fn get_best_move_for_player<G: SearchableGame>(
     let alphabeta_start = Instant::now();
     let (best_moves, score) = alpha_beta(&mut game, 10, f64::NEG_INFINITY, f64::INFINITY, player);
     println!(
-        "Found {} moves with best score {} (negamax duration: {:?})",
+        "Found {} moves with best score {} (search duration: {:?}).",
         best_moves.len(),
         score,
         Instant::now() - alphabeta_start
@@ -70,30 +70,28 @@ pub fn get_best_move_for_player<G: SearchableGame>(
         0 => (None, (score, None)),
         1 => (Some(best_moves[0].clone()), (score, None)),
         len => {
-            println!("Entering Monte Carlo simulation with {} moves!", len);
+            println!(
+                "Entering Monte Carlo simulation to tiebreak {} possible moves...",
+                len
+            );
             let monte_carlo_start = Instant::now();
             let best_best_move = best_moves
                 .into_iter()
                 .map(|mv| {
-                    (
-                        {
-                            let mut game = game.truncate_history_and_clone();
-                            game.apply_move(&mv);
-                            game
-                        },
-                        mv,
-                    )
+                    let mut game = game.truncate_history_and_clone();
+                    game.apply_move(&mv);
+                    (mv, game)
                 })
                 .collect::<Vec<_>>()
                 .into_par_iter()
-                .map(move |(game, mv)| MoveSelection::<G> {
+                .map(move |(mv, game)| MoveSelection::<G> {
                     mv: Some(mv),
                     win_ratio: monte_carlo(game, player, MONTE_CARLO_ITERATIONS),
                 })
                 .reduce(no_move_selection, combine_move_selection);
 
             println!(
-                "Monte carlo finished (duration: {:?})",
+                "Monte carlo finished (duration: {:?}).",
                 Instant::now() - monte_carlo_start
             );
             (best_best_move.mv, (score, Some(best_best_move.win_ratio)))
