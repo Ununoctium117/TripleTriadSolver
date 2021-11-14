@@ -12,15 +12,16 @@ jobs:
         include:
           - target: x86_64-pc-windows-gnu
             archive: zip
-          - target: x84_64-unknown-linux-musl
-            archive: tar.gz tar.xz
+          - target: x86_64-unknown-linux-musl
+            archive: tar.gz
           - target: x86_64-apple-darwin
             archive: zip
-      steps:
-        - uses: actions/checkout@master
-        - name: Compile and release
-          uses: rust-build/rust-build.action@latest
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-            RUSTTARGET: ${{ matrix.target }}
-            ARCHIVE_TYPES: ${{ matrix.archive }}
+    steps:
+      - uses: actions/checkout@master
+      - name: Compile and release
+        uses: rust-build/rust-build.action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTTARGET: ${{ matrix.target }}
+          EXTRA_FILES: "README.md"
+          ARCHIVE_TYPES: ${{ matrix.archive }}
