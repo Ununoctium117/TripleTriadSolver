@@ -192,7 +192,7 @@ pub fn load_all_data<P: AsRef<Path>>(base_path: P) -> Result<Data, LoadDataError
                 println!("Missing name for NPC {} (mapped: {})", id, mapped_id);
             }
         } else {
-            // println!("Missing ID mapping for NPC {}", id);
+            println!("Missing ID mapping for NPC {}", id);
         }
     }
 
@@ -239,9 +239,6 @@ fn load_npc_id_map<P: AsRef<Path>>(
         let top_id = record[0].parse()?;
         for i in 0..32 {
             let id = record[i + 3].parse()?;
-            if id == 0 {
-                break;
-            }
 
             if npc_ids.contains_key(&id) {
                 result.insert(id, top_id);
